@@ -1,0 +1,9 @@
+app:
+  errors:
+    include-debug-detail: false
+
+logging:
+  file:
+    name: target/test-logs/zoopass-test.log
+  level:
+    com.zoopass: INFO

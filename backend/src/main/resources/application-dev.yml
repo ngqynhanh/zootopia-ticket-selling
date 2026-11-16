@@ -1,0 +1,17 @@
+spring:
+  jpa:
+    show-sql: false
+
+app:
+  errors:
+    include-debug-detail: true
+
+management:
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    com.zoopass: DEBUG
+    org.hibernate.SQL: DEBUG

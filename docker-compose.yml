@@ -1,0 +1,46 @@
+# Local full stack: PostgreSQL + backend.
+#   cp .env.example .env   (then edit the values)
+#   docker compose up -d --build
+# Backend: http://localhost:8080  ·  Swagger UI: http://localhost:8080/swagger-ui.html
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-zoopass}
+      POSTGRES_USER: ${POSTGRES_USER:-zoopass}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      TZ: Asia/Ho_Chi_Minh
+    ports:
+      - "5432:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-dev}
+      DB_URL: jdbc:postgresql://db:5432/${POSTGRES_DB:-zoopass}
+      DB_USERNAME: ${POSTGRES_USER:-zoopass}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173}
+    ports:
+      - "8080:8080"
+    volumes:
+      - backend-logs:/app/logs
+
+  # frontend:
+  #   Added when the React app is moved into ./frontend (week 1, member B).
+
+volumes:
+  db-data:
+  backend-logs:

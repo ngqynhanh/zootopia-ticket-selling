@@ -1,0 +1,13 @@
+app:
+  errors:
+    include-debug-detail: false
+
+springdoc:
+  swagger-ui:
+    # Keep Swagger UI available for grading; set SWAGGER_ENABLED=false to hide it.
+    enabled: ${SWAGGER_ENABLED:true}
+
+logging:
+  level:
+    root: INFO
+    com.zoopass: INFO
