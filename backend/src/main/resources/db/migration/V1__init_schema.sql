@@ -9,6 +9,10 @@
 --   * Money in VND: NUMERIC(12,2), never negative.
 --   * Status / enum columns are VARCHAR + CHECK (readable, easy to extend).
 --   * Every foreign key has an index.
+--
+-- Scope: the 13 core tables + 2 junction tables of the domain.
+-- Supporting tables (tokens, audit log, settings, FAQ, notifications...)
+-- are added by later migrations (V2, V3...) in the week their feature is built.
 -- =====================================================================
 
 -- Keeps updated_at correct even for rows changed by raw SQL (seed scripts, admin fixes).
@@ -47,19 +51,6 @@ CREATE TABLE users (
 -- Emails are unique regardless of case.
 CREATE UNIQUE INDEX uq_users_email ON users (lower(email));
 CREATE INDEX ix_users_role_active ON users (role, is_active);
-
--- One-time tokens for email verification and password reset.
-CREATE TABLE user_tokens (
-    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    user_id     BIGINT       NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-    token_hash  VARCHAR(128) NOT NULL UNIQUE,
-    purpose     VARCHAR(30)  NOT NULL,
-    expires_at  TIMESTAMPTZ  NOT NULL,
-    used_at     TIMESTAMPTZ,
-    created_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    CONSTRAINT ck_user_tokens_purpose CHECK (purpose IN ('EMAIL_VERIFICATION', 'PASSWORD_RESET', 'REFRESH'))
-);
-CREATE INDEX ix_user_tokens_user ON user_tokens (user_id, purpose);
 
 -- ---------------------------------------------------------------------
 -- 2. Catalog: ticket types and experience combos
@@ -120,7 +111,7 @@ CREATE TABLE combos (
 CREATE INDEX ix_combos_active_price ON combos (is_active, price);
 
 -- ---------------------------------------------------------------------
--- 3. Visit planning: zones, animals, activity schedule, FAQ
+-- 3. Visit planning: zones and activity schedule
 -- ---------------------------------------------------------------------
 CREATE TABLE zones (
     id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -145,26 +136,6 @@ CREATE TABLE zones (
     CONSTRAINT ck_zones_map_y CHECK (map_y IS NULL OR map_y BETWEEN 0 AND 100)
 );
 CREATE INDEX ix_zones_type_active ON zones (zone_type, is_active);
-
-CREATE TABLE animals (
-    id                   BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    zone_id              BIGINT       NOT NULL REFERENCES zones (id) ON DELETE RESTRICT,
-    common_name          VARCHAR(120) NOT NULL,
-    scientific_name      VARCHAR(150),
-    conservation_status  VARCHAR(5),
-    description          TEXT,
-    image_url            VARCHAR(500),
-    is_active            BOOLEAN      NOT NULL DEFAULT TRUE,
-    deleted_at           TIMESTAMPTZ,
-    created_at           TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    updated_at           TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    created_by           BIGINT REFERENCES users (id) ON DELETE SET NULL,
-    updated_by           BIGINT REFERENCES users (id) ON DELETE SET NULL,
-    -- IUCN Red List categories
-    CONSTRAINT ck_animals_iucn CHECK (conservation_status IS NULL
-        OR conservation_status IN ('LC', 'NT', 'VU', 'EN', 'CR', 'EW', 'EX', 'DD', 'NE'))
-);
-CREATE INDEX ix_animals_zone ON animals (zone_id);
 
 CREATE TABLE activities (
     id             BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -193,25 +164,6 @@ CREATE TABLE activities (
         weeks_of_month IS NULL OR weeks_of_month <@ ARRAY[1,2,3,4,5]::SMALLINT[])
 );
 CREATE INDEX ix_activities_zone_start ON activities (zone_id, start_time);
-
-CREATE TABLE faqs (
-    id             BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    category       VARCHAR(30)  NOT NULL,
-    question       VARCHAR(300) NOT NULL,
-    answer         TEXT         NOT NULL,
-    display_order  SMALLINT     NOT NULL DEFAULT 0,
-    is_published   BOOLEAN      NOT NULL DEFAULT TRUE,
-    -- Full-text search over question + answer ('simple' config: Vietnamese has no built-in stemmer).
-    search_vector  TSVECTOR GENERATED ALWAYS AS (
-        to_tsvector('simple', coalesce(question, '') || ' ' || coalesce(answer, ''))) STORED,
-    created_at     TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    updated_at     TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    created_by     BIGINT REFERENCES users (id) ON DELETE SET NULL,
-    updated_by     BIGINT REFERENCES users (id) ON DELETE SET NULL,
-    CONSTRAINT ck_faqs_category CHECK (category IN ('TICKET', 'SERVICE', 'GROUP', 'RULE', 'DIRECTION', 'OTHER'))
-);
-CREATE INDEX ix_faqs_category_order ON faqs (category, display_order);
-CREATE INDEX ix_faqs_search ON faqs USING GIN (search_vector);
 
 -- ---------------------------------------------------------------------
 -- 4. Promotions and group policies
@@ -441,7 +393,7 @@ CREATE INDEX ix_payments_received_by ON payments (received_by);
 CREATE INDEX ix_payments_status_paid ON payments (status, paid_at);
 
 -- ---------------------------------------------------------------------
--- 6. E-tickets and gate check-ins
+-- 6. E-tickets
 -- ---------------------------------------------------------------------
 CREATE TABLE tickets (
     id             BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -464,21 +416,6 @@ CREATE TABLE tickets (
 CREATE INDEX ix_tickets_order ON tickets (order_id);
 -- Speeds up the nightly "expire tickets" job.
 CREATE INDEX ix_tickets_expires_active ON tickets (expires_at) WHERE status = 'ACTIVE';
-
-CREATE TABLE check_ins (
-    id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    ticket_id     BIGINT      NOT NULL REFERENCES tickets (id) ON DELETE CASCADE,
-    staff_id      BIGINT REFERENCES users (id) ON DELETE SET NULL,
-    people_count  SMALLINT    NOT NULL,
-    gate          CHAR(1)     NOT NULL,
-    scanned_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    -- One scan admits at most 4 people (Saigon Zoo e-ticket rule).
-    CONSTRAINT ck_check_ins_people CHECK (people_count BETWEEN 1 AND 4),
-    CONSTRAINT ck_check_ins_gate CHECK (gate IN ('A', 'B', 'C', 'D'))
-);
-CREATE INDEX ix_check_ins_ticket ON check_ins (ticket_id);
-CREATE INDEX ix_check_ins_staff ON check_ins (staff_id);
-CREATE INDEX ix_check_ins_scanned ON check_ins (scanned_at);
 
 -- ---------------------------------------------------------------------
 -- 7. Junction tables (many-to-many)
@@ -505,62 +442,6 @@ CREATE TABLE user_promotions (
 CREATE INDEX ix_user_promotions_promotion ON user_promotions (promotion_id);
 CREATE INDEX ix_user_promotions_order ON user_promotions (order_id);
 
--- "My visit plan": activities a user saved for a given day.
-CREATE TABLE user_saved_activities (
-    user_id      BIGINT      NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-    activity_id  BIGINT      NOT NULL REFERENCES activities (id) ON DELETE CASCADE,
-    plan_date    DATE        NOT NULL,
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (user_id, activity_id, plan_date)
-);
-CREATE INDEX ix_user_saved_activities_activity ON user_saved_activities (activity_id);
-
--- ---------------------------------------------------------------------
--- 8. Cross-cutting: notifications, audit log, system settings
--- ---------------------------------------------------------------------
-CREATE TABLE notifications (
-    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    user_id     BIGINT       NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-    type        VARCHAR(30)  NOT NULL,
-    title       VARCHAR(150) NOT NULL,
-    content     VARCHAR(1000),
-    link        VARCHAR(300),
-    is_read     BOOLEAN      NOT NULL DEFAULT FALSE,
-    read_at     TIMESTAMPTZ,
-    created_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    CONSTRAINT ck_notifications_type CHECK (type IN (
-        'ORDER', 'PAYMENT', 'VERIFICATION', 'TICKET', 'REMINDER', 'SYSTEM')),
-    CONSTRAINT ck_notifications_read CHECK (NOT is_read OR read_at IS NOT NULL)
-);
-CREATE INDEX ix_notifications_user_unread ON notifications (user_id, is_read, created_at DESC);
-
-CREATE TABLE audit_logs (
-    id           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    actor_id     BIGINT REFERENCES users (id) ON DELETE SET NULL,
-    action       VARCHAR(40)  NOT NULL,
-    entity_type  VARCHAR(40)  NOT NULL,
-    entity_id    BIGINT,
-    old_value    JSONB,
-    new_value    JSONB,
-    ip_address   VARCHAR(45),
-    request_id   VARCHAR(36),
-    created_at   TIMESTAMPTZ  NOT NULL DEFAULT now()
-);
-CREATE INDEX ix_audit_logs_entity ON audit_logs (entity_type, entity_id);
-CREATE INDEX ix_audit_logs_actor_created ON audit_logs (actor_id, created_at DESC);
-CREATE INDEX ix_audit_logs_created ON audit_logs (created_at DESC);
-
-CREATE TABLE system_settings (
-    setting_key    VARCHAR(60)  PRIMARY KEY,
-    setting_value  VARCHAR(500) NOT NULL,
-    value_type     VARCHAR(10)  NOT NULL DEFAULT 'STRING',
-    description    VARCHAR(300),
-    is_public      BOOLEAN      NOT NULL DEFAULT FALSE,
-    updated_at     TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    updated_by     BIGINT REFERENCES users (id) ON DELETE SET NULL,
-    CONSTRAINT ck_system_settings_type CHECK (value_type IN ('STRING', 'INTEGER', 'DECIMAL', 'BOOLEAN', 'TIME'))
-);
-
 -- ---------------------------------------------------------------------
 -- updated_at triggers
 -- ---------------------------------------------------------------------
@@ -569,9 +450,9 @@ DECLARE
     t TEXT;
 BEGIN
     FOREACH t IN ARRAY ARRAY[
-        'users', 'ticket_types', 'combos', 'zones', 'animals', 'activities', 'faqs',
-        'promotions', 'group_policies', 'orders', 'order_items', 'group_bookings',
-        'verifications', 'payments', 'tickets', 'system_settings']
+        'users', 'ticket_types', 'combos', 'zones', 'activities', 'promotions',
+        'group_policies', 'orders', 'order_items', 'group_bookings', 'verifications',
+        'payments', 'tickets']
     LOOP
         EXECUTE format(
             'CREATE TRIGGER trg_%I_updated_at BEFORE UPDATE ON %I FOR EACH ROW EXECUTE FUNCTION set_updated_at()',

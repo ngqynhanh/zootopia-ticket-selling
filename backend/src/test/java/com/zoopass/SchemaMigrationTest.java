@@ -14,12 +14,13 @@ import org.springframework.transaction.annotation.Transactional;
 /**
  * Checks the Flyway schema against the course requirements and that key
  * business rules are enforced by the database itself.
+ * Each test runs in a transaction that is rolled back, so tests do not affect each other.
  */
 @IntegrationTest
 @Transactional
 class SchemaMigrationTest {
 
-    private static final List<String> JUNCTION_TABLES = List.of("combo_zones", "user_promotions", "user_saved_activities");
+    private static final List<String> JUNCTION_TABLES = List.of("combo_zones", "user_promotions");
 
     @Autowired
     private JdbcTemplate jdbc;
@@ -52,23 +53,13 @@ class SchemaMigrationTest {
                       SELECT 1 FROM pg_index i
                       WHERE i.indrelid = c.conrelid
                         AND (i.indkey::int2[])[0:cardinality(c.conkey) - 1] = c.conkey)
-                  -- audit columns (created_by / updated_by) are never queried by
+                  -- audit columns (created_by / updated_by) are never used in WHERE/JOIN
                   AND NOT EXISTS (
                       SELECT 1 FROM pg_attribute a
                       WHERE a.attrelid = c.conrelid AND a.attnum = c.conkey[1]
                         AND a.attname IN ('created_by', 'updated_by'))
                 """, String.class);
         assertThat(unindexed).isEmpty();
-    }
-
-    @Test
-    void referenceDataIsLoaded() {
-        assertThat(count("ticket_types")).isEqualTo(13);
-        assertThat(count("group_policies")).isEqualTo(4);
-        assertThat(count("combos")).isEqualTo(11);
-        assertThat(jdbc.queryForObject(
-                "SELECT setting_value FROM system_settings WHERE setting_key = 'group.min_size'", String.class))
-                .isEqualTo("10");
     }
 
     @Test
@@ -85,8 +76,7 @@ class SchemaMigrationTest {
     @Test
     void groupBookingNeedsAtLeastTenVisitors() {
         long orderId = insertOrder();
-        long policyId = jdbc.queryForObject(
-                "SELECT id FROM group_policies WHERE group_category = 'STANDARD'", Long.class);
+        long policyId = insertGroupPolicy();
         assertThatThrownBy(() -> jdbc.update("""
                 INSERT INTO group_bookings (order_id, group_policy_id, organization_name, contact_name,
                                             contact_phone, total_visitors)
@@ -99,8 +89,7 @@ class SchemaMigrationTest {
     @Test
     void oneGuideServesAtMostFiftyVisitors() {
         long orderId = insertOrder();
-        long policyId = jdbc.queryForObject(
-                "SELECT id FROM group_policies WHERE group_category = 'STANDARD'", Long.class);
+        long policyId = insertGroupPolicy();
         assertThatThrownBy(() -> jdbc.update("""
                 INSERT INTO group_bookings (order_id, group_policy_id, organization_name, contact_name,
                                             contact_phone, total_visitors, guide_count, guide_language)
@@ -111,16 +100,16 @@ class SchemaMigrationTest {
     }
 
     @Test
-    void checkInAdmitsAtMostFourPeoplePerScan() {
-        long orderId = insertOrder();
-        long ticketId = jdbc.queryForObject("""
-                INSERT INTO tickets (order_id, qr_token, total_entries, valid_from, expires_at)
-                VALUES (?, 'qr-test-token', 6, CURRENT_DATE, now() + interval '30 days') RETURNING id
-                """, Long.class, orderId);
-        assertThatThrownBy(() -> jdbc.update(
-                "INSERT INTO check_ins (ticket_id, people_count, gate) VALUES (?, 5, 'A')", ticketId))
+    void orderTotalMustEqualSubtotalMinusDiscount() {
+        long userId = insertUser("total-check@example.com");
+        assertThatThrownBy(() -> jdbc.update("""
+                INSERT INTO orders (order_code, user_id, order_type, status, visit_date, contact_email,
+                                    subtotal, discount_amount, total_amount)
+                VALUES ('ZP-TOTAL', ?, 'INDIVIDUAL', 'PENDING_PAYMENT', CURRENT_DATE + 1, 'a@example.com',
+                        120000, 10000, 120000)
+                """, userId))
                 .isInstanceOf(DataIntegrityViolationException.class)
-                .hasMessageContaining("ck_check_ins_people");
+                .hasMessageContaining("ck_orders_amounts");
     }
 
     @Test
@@ -134,7 +123,7 @@ class SchemaMigrationTest {
     @Test
     void deletingAnOrderCascadesToItsItems() {
         long orderId = insertOrder();
-        long ticketTypeId = jdbc.queryForObject("SELECT id FROM ticket_types WHERE code = 'GATE_ADULT'", Long.class);
+        long ticketTypeId = insertTicketType("GATE_ADULT", 60000);
         jdbc.update("""
                 INSERT INTO order_items (order_id, ticket_type_id, quantity, unit_price, line_total)
                 VALUES (?, ?, 2, 60000, 120000)
@@ -149,7 +138,7 @@ class SchemaMigrationTest {
     @Test
     void ticketTypeInUseCannotBeHardDeleted() {
         long orderId = insertOrder();
-        long ticketTypeId = jdbc.queryForObject("SELECT id FROM ticket_types WHERE code = 'GATE_CHILD'", Long.class);
+        long ticketTypeId = insertTicketType("GATE_CHILD", 40000);
         jdbc.update("""
                 INSERT INTO order_items (order_id, ticket_type_id, quantity, unit_price, line_total)
                 VALUES (?, ?, 1, 40000, 40000)
@@ -161,22 +150,32 @@ class SchemaMigrationTest {
 
     @Test
     void updatedAtTriggerRefreshesTimestamp() {
-        jdbc.update("UPDATE ticket_types SET updated_at = now() - interval '1 day' WHERE code = 'GATE_ADULT'");
-        jdbc.update("UPDATE ticket_types SET price = 65000 WHERE code = 'GATE_ADULT'");
+        long ticketTypeId = insertTicketType("GATE_ADULT", 60000);
+        jdbc.update("UPDATE ticket_types SET updated_at = now() - interval '1 day' WHERE id = ?", ticketTypeId);
+        jdbc.update("UPDATE ticket_types SET price = 65000 WHERE id = ?", ticketTypeId);
         Boolean refreshed = jdbc.queryForObject(
-                "SELECT updated_at > now() - interval '1 minute' FROM ticket_types WHERE code = 'GATE_ADULT'",
-                Boolean.class);
+                "SELECT updated_at > now() - interval '1 minute' FROM ticket_types WHERE id = ?",
+                Boolean.class, ticketTypeId);
         assertThat(refreshed).isTrue();
-    }
-
-    private int count(String table) {
-        return jdbc.queryForObject("SELECT count(*) FROM " + table, Integer.class);
     }
 
     private long insertUser(String email) {
         return jdbc.queryForObject("""
                 INSERT INTO users (email, password_hash, full_name) VALUES (?, 'hash', 'Test User') RETURNING id
                 """, Long.class, email);
+    }
+
+    private long insertTicketType(String code, int price) {
+        return jdbc.queryForObject("""
+                INSERT INTO ticket_types (code, name, category, price) VALUES (?, ?, 'GATE', ?) RETURNING id
+                """, Long.class, code, code, price);
+    }
+
+    private long insertGroupPolicy() {
+        return jdbc.queryForObject("""
+                INSERT INTO group_policies (group_category, name, visitor_discount_percent)
+                VALUES ('STANDARD', 'Đoàn khác', 10) RETURNING id
+                """, Long.class);
     }
 
     private long insertOrder() {

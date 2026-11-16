@@ -47,10 +47,10 @@ mvn test
 
 Integration tests run against a real embedded PostgreSQL, the same database engine as production. They check:
 
-- the schema loads through Flyway and matches the JPA entities;
+- the schema loads through Flyway;
 - schema size requirements are met and every foreign key is indexed;
 - business-rule constraints, cascades and triggers;
-- the API responses and the error format.
+- the error response format.
 
 ## Environment variables
 
@@ -71,11 +71,8 @@ com.zoopass
 ├── common/
 │   ├── entity/    BaseEntity (id + audit columns), SoftDeletableEntity
 │   ├── exception/ ApiError, ErrorCode, ApiException + subclasses, GlobalExceptionHandler
-│   ├── dto/       PageResponse ("Showing 21–40 of 156")
 │   └── web/       RequestIdFilter (X-Request-Id, access log)
-├── user/          User, Role, UserRepository          (auth + CRUD: week 2)
-├── catalog/       TicketType, Combo: public read API   (manager CRUD: week 2)
-└── setting/       SystemSetting: runtime business parameters
+└── (feature modules from week 2: user/, auth/, catalog/, order/, ... – see docs/backend-roadmap.md)
 ```
 
 Each feature module follows the same layering: `Controller → Service → Repository`, with entities kept
@@ -113,12 +110,7 @@ separate from request/response DTOs (records).
 `requestId` matches the `X-Request-Id` response header and the server log line, so a reported error can be
 traced. In the `dev` profile a `debug` field with the exception detail is added.
 
-## Endpoints available (week 1)
+## Endpoints
 
-| Method | Path | Description |
-|---|---|---|
-| GET | `/api/v1/ticket-types?category=GATE` | Active ticket types (optional category filter) |
-| GET | `/api/v1/ticket-types/{id}` | One ticket type |
-| GET | `/api/v1/combos?page=0&size=10&sortBy=price&direction=desc` | Combos, paginated and sortable |
-| GET | `/api/v1/combos/{id}` | One combo |
-| GET | `/api/v1/settings/public` | Opening hours, group size, deposit %, ... |
+Week 1 is the skeleton only: no business endpoints yet, just `/actuator/health` and Swagger UI.
+The API is built from week 2 (see [docs/backend-roadmap.md](../docs/backend-roadmap.md)).

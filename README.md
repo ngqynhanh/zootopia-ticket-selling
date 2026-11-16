@@ -45,12 +45,12 @@ Running without Docker is described in [backend/README.md](backend/README.md).
 
 ## Status
 
-Week 1 (09/11 – 15/11) is done:
+Week 1 (09/11 – 15/11), backend part, is done:
 
-- database schema with all tables, constraints and indexes;
-- reference data;
-- backend skeleton: common error handling, audit base entities, logging, CORS, Swagger;
-- public catalog API;
+- ERD;
+- SQL schema: 13 core tables + 2 junction tables, with constraints, FKs and indexes;
+- Spring Boot project skeleton;
 - Docker setup.
 
 Next is week 2: authentication (JWT), RBAC, and CRUD for users, ticket types and combos.
+See [docs/backend-roadmap.md](docs/backend-roadmap.md).

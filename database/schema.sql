@@ -9,6 +9,10 @@
 --   * Money in VND: NUMERIC(12,2), never negative.
 --   * Status / enum columns are VARCHAR + CHECK (readable, easy to extend).
 --   * Every foreign key has an index.
+--
+-- Scope: the 13 core tables + 2 junction tables of the domain.
+-- Supporting tables (tokens, audit log, settings, FAQ, notifications...)
+-- are added by later migrations (V2, V3...) in the week their feature is built.
 -- =====================================================================
 
 -- Keeps updated_at correct even for rows changed by raw SQL (seed scripts, admin fixes).
@@ -47,19 +51,6 @@ CREATE TABLE users (
 -- Emails are unique regardless of case.
 CREATE UNIQUE INDEX uq_users_email ON users (lower(email));
 CREATE INDEX ix_users_role_active ON users (role, is_active);
-
--- One-time tokens for email verification and password reset.
-CREATE TABLE user_tokens (
-    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    user_id     BIGINT       NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-    token_hash  VARCHAR(128) NOT NULL UNIQUE,
-    purpose     VARCHAR(30)  NOT NULL,
-    expires_at  TIMESTAMPTZ  NOT NULL,
-    used_at     TIMESTAMPTZ,
-    created_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    CONSTRAINT ck_user_tokens_purpose CHECK (purpose IN ('EMAIL_VERIFICATION', 'PASSWORD_RESET', 'REFRESH'))
-);
-CREATE INDEX ix_user_tokens_user ON user_tokens (user_id, purpose);
 
 -- ---------------------------------------------------------------------
 -- 2. Catalog: ticket types and experience combos
@@ -120,7 +111,7 @@ CREATE TABLE combos (
 CREATE INDEX ix_combos_active_price ON combos (is_active, price);
 
 -- ---------------------------------------------------------------------
--- 3. Visit planning: zones, animals, activity schedule, FAQ
+-- 3. Visit planning: zones and activity schedule
 -- ---------------------------------------------------------------------
 CREATE TABLE zones (
     id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -145,26 +136,6 @@ CREATE TABLE zones (
     CONSTRAINT ck_zones_map_y CHECK (map_y IS NULL OR map_y BETWEEN 0 AND 100)
 );
 CREATE INDEX ix_zones_type_active ON zones (zone_type, is_active);
-
-CREATE TABLE animals (
-    id                   BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    zone_id              BIGINT       NOT NULL REFERENCES zones (id) ON DELETE RESTRICT,
-    common_name          VARCHAR(120) NOT NULL,
-    scientific_name      VARCHAR(150),
-    conservation_status  VARCHAR(5),
-    description          TEXT,
-    image_url            VARCHAR(500),
-    is_active            BOOLEAN      NOT NULL DEFAULT TRUE,
-    deleted_at           TIMESTAMPTZ,
-    created_at           TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    updated_at           TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    created_by           BIGINT REFERENCES users (id) ON DELETE SET NULL,
-    updated_by           BIGINT REFERENCES users (id) ON DELETE SET NULL,
-    -- IUCN Red List categories
-    CONSTRAINT ck_animals_iucn CHECK (conservation_status IS NULL
-        OR conservation_status IN ('LC', 'NT', 'VU', 'EN', 'CR', 'EW', 'EX', 'DD', 'NE'))
-);
-CREATE INDEX ix_animals_zone ON animals (zone_id);
 
 CREATE TABLE activities (
     id             BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -193,25 +164,6 @@ CREATE TABLE activities (
         weeks_of_month IS NULL OR weeks_of_month <@ ARRAY[1,2,3,4,5]::SMALLINT[])
 );
 CREATE INDEX ix_activities_zone_start ON activities (zone_id, start_time);
-
-CREATE TABLE faqs (
-    id             BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    category       VARCHAR(30)  NOT NULL,
-    question       VARCHAR(300) NOT NULL,
-    answer         TEXT         NOT NULL,
-    display_order  SMALLINT     NOT NULL DEFAULT 0,
-    is_published   BOOLEAN      NOT NULL DEFAULT TRUE,
-    -- Full-text search over question + answer ('simple' config: Vietnamese has no built-in stemmer).
-    search_vector  TSVECTOR GENERATED ALWAYS AS (
-        to_tsvector('simple', coalesce(question, '') || ' ' || coalesce(answer, ''))) STORED,
-    created_at     TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    updated_at     TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    created_by     BIGINT REFERENCES users (id) ON DELETE SET NULL,
-    updated_by     BIGINT REFERENCES users (id) ON DELETE SET NULL,
-    CONSTRAINT ck_faqs_category CHECK (category IN ('TICKET', 'SERVICE', 'GROUP', 'RULE', 'DIRECTION', 'OTHER'))
-);
-CREATE INDEX ix_faqs_category_order ON faqs (category, display_order);
-CREATE INDEX ix_faqs_search ON faqs USING GIN (search_vector);
 
 -- ---------------------------------------------------------------------
 -- 4. Promotions and group policies
@@ -441,7 +393,7 @@ CREATE INDEX ix_payments_received_by ON payments (received_by);
 CREATE INDEX ix_payments_status_paid ON payments (status, paid_at);
 
 -- ---------------------------------------------------------------------
--- 6. E-tickets and gate check-ins
+-- 6. E-tickets
 -- ---------------------------------------------------------------------
 CREATE TABLE tickets (
     id             BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -464,21 +416,6 @@ CREATE TABLE tickets (
 CREATE INDEX ix_tickets_order ON tickets (order_id);
 -- Speeds up the nightly "expire tickets" job.
 CREATE INDEX ix_tickets_expires_active ON tickets (expires_at) WHERE status = 'ACTIVE';
-
-CREATE TABLE check_ins (
-    id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    ticket_id     BIGINT      NOT NULL REFERENCES tickets (id) ON DELETE CASCADE,
-    staff_id      BIGINT REFERENCES users (id) ON DELETE SET NULL,
-    people_count  SMALLINT    NOT NULL,
-    gate          CHAR(1)     NOT NULL,
-    scanned_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    -- One scan admits at most 4 people (Saigon Zoo e-ticket rule).
-    CONSTRAINT ck_check_ins_people CHECK (people_count BETWEEN 1 AND 4),
-    CONSTRAINT ck_check_ins_gate CHECK (gate IN ('A', 'B', 'C', 'D'))
-);
-CREATE INDEX ix_check_ins_ticket ON check_ins (ticket_id);
-CREATE INDEX ix_check_ins_staff ON check_ins (staff_id);
-CREATE INDEX ix_check_ins_scanned ON check_ins (scanned_at);
 
 -- ---------------------------------------------------------------------
 -- 7. Junction tables (many-to-many)
@@ -505,62 +442,6 @@ CREATE TABLE user_promotions (
 CREATE INDEX ix_user_promotions_promotion ON user_promotions (promotion_id);
 CREATE INDEX ix_user_promotions_order ON user_promotions (order_id);
 
--- "My visit plan": activities a user saved for a given day.
-CREATE TABLE user_saved_activities (
-    user_id      BIGINT      NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-    activity_id  BIGINT      NOT NULL REFERENCES activities (id) ON DELETE CASCADE,
-    plan_date    DATE        NOT NULL,
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (user_id, activity_id, plan_date)
-);
-CREATE INDEX ix_user_saved_activities_activity ON user_saved_activities (activity_id);
-
--- ---------------------------------------------------------------------
--- 8. Cross-cutting: notifications, audit log, system settings
--- ---------------------------------------------------------------------
-CREATE TABLE notifications (
-    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    user_id     BIGINT       NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-    type        VARCHAR(30)  NOT NULL,
-    title       VARCHAR(150) NOT NULL,
-    content     VARCHAR(1000),
-    link        VARCHAR(300),
-    is_read     BOOLEAN      NOT NULL DEFAULT FALSE,
-    read_at     TIMESTAMPTZ,
-    created_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    CONSTRAINT ck_notifications_type CHECK (type IN (
-        'ORDER', 'PAYMENT', 'VERIFICATION', 'TICKET', 'REMINDER', 'SYSTEM')),
-    CONSTRAINT ck_notifications_read CHECK (NOT is_read OR read_at IS NOT NULL)
-);
-CREATE INDEX ix_notifications_user_unread ON notifications (user_id, is_read, created_at DESC);
-
-CREATE TABLE audit_logs (
-    id           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    actor_id     BIGINT REFERENCES users (id) ON DELETE SET NULL,
-    action       VARCHAR(40)  NOT NULL,
-    entity_type  VARCHAR(40)  NOT NULL,
-    entity_id    BIGINT,
-    old_value    JSONB,
-    new_value    JSONB,
-    ip_address   VARCHAR(45),
-    request_id   VARCHAR(36),
-    created_at   TIMESTAMPTZ  NOT NULL DEFAULT now()
-);
-CREATE INDEX ix_audit_logs_entity ON audit_logs (entity_type, entity_id);
-CREATE INDEX ix_audit_logs_actor_created ON audit_logs (actor_id, created_at DESC);
-CREATE INDEX ix_audit_logs_created ON audit_logs (created_at DESC);
-
-CREATE TABLE system_settings (
-    setting_key    VARCHAR(60)  PRIMARY KEY,
-    setting_value  VARCHAR(500) NOT NULL,
-    value_type     VARCHAR(10)  NOT NULL DEFAULT 'STRING',
-    description    VARCHAR(300),
-    is_public      BOOLEAN      NOT NULL DEFAULT FALSE,
-    updated_at     TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    updated_by     BIGINT REFERENCES users (id) ON DELETE SET NULL,
-    CONSTRAINT ck_system_settings_type CHECK (value_type IN ('STRING', 'INTEGER', 'DECIMAL', 'BOOLEAN', 'TIME'))
-);
-
 -- ---------------------------------------------------------------------
 -- updated_at triggers
 -- ---------------------------------------------------------------------
@@ -569,9 +450,9 @@ DECLARE
     t TEXT;
 BEGIN
     FOREACH t IN ARRAY ARRAY[
-        'users', 'ticket_types', 'combos', 'zones', 'animals', 'activities', 'faqs',
-        'promotions', 'group_policies', 'orders', 'order_items', 'group_bookings',
-        'verifications', 'payments', 'tickets', 'system_settings']
+        'users', 'ticket_types', 'combos', 'zones', 'activities', 'promotions',
+        'group_policies', 'orders', 'order_items', 'group_bookings', 'verifications',
+        'payments', 'tickets']
     LOOP
         EXECUTE format(
             'CREATE TRIGGER trg_%I_updated_at BEFORE UPDATE ON %I FOR EACH ROW EXECUTE FUNCTION set_updated_at()',
@@ -579,108 +460,3 @@ BEGIN
     END LOOP;
 END;
 $$;
--- =====================================================================
--- Reference data the application needs to run (not demo data).
--- Prices and rules follow the public Saigon Zoo pages listed in
--- extra-resources/online-resource.txt (read 12/11/2026).
--- Combo prices are NOT published by the source: they are team assumptions.
--- Demo data (100+ users, orders, ...) goes in database/seed-data.sql.
--- =====================================================================
-
--- ---------------------------------------------------------------------
--- System settings
--- ---------------------------------------------------------------------
-INSERT INTO system_settings (setting_key, setting_value, value_type, description, is_public) VALUES
-    ('zoo.opening_time',               '07:00', 'TIME',    'Giờ mở cửa', TRUE),
-    ('zoo.closing_time',               '18:30', 'TIME',    'Giờ đóng cửa', TRUE),
-    ('ticket.sales_cutoff_time',       '17:30', 'TIME',    'Giờ ngưng bán vé cho ngày hiện tại', TRUE),
-    ('ticket.validity_days',           '30',    'INTEGER', 'E-ticket có giá trị 30 ngày kể từ ngày xuất', TRUE),
-    ('ticket.max_people_per_scan',     '4',     'INTEGER', 'Số người tối đa cho mỗi lượt quét QR', TRUE),
-    ('booking.max_days_ahead',         '30',    'INTEGER', 'Chỉ đặt vé tối đa 30 ngày tới', TRUE),
-    ('order.payment_timeout_minutes',  '15',    'INTEGER', 'Hủy đơn chưa thanh toán sau N phút', FALSE),
-    ('group.min_size',                 '10',    'INTEGER', 'Số khách tối thiểu để tính là đoàn', TRUE),
-    ('group.deposit_percent',          '30',    'DECIMAL', 'Tỷ lệ đặt cọc vé đoàn (%)', TRUE),
-    ('group.max_visitors_per_guide',   '50',    'INTEGER', 'Số khách tối đa cho 1 thuyết minh viên', TRUE),
-    ('upload.max_file_size_mb',        '5',     'INTEGER', 'Dung lượng tối đa file upload (MB)', TRUE);
-
--- ---------------------------------------------------------------------
--- Ticket types
--- ---------------------------------------------------------------------
-INSERT INTO ticket_types
-    (code, name, category, description, price, min_height_cm, max_height_cm, min_quantity, entries_per_unit, validity_days, display_order)
-VALUES
-    ('GATE_ADULT',  'Vé cổng người lớn', 'GATE',
-     'Khách có chiều cao từ 1,3 m trở lên.', 60000, 130, NULL, 1, 1, 30, 1),
-    ('GATE_CHILD',  'Vé cổng trẻ em', 'GATE',
-     'Trẻ em cao từ 1 m đến dưới 1,3 m.', 40000, 100, 130, 1, 1, 30, 2),
-    ('GATE_INFANT', 'Trẻ em dưới 1 m', 'GATE',
-     'Miễn phí, phải đi cùng phụ huynh hoặc người giám hộ.', 0, NULL, 100, 1, 1, 30, 3),
-    ('TRAIN_ADULT', 'Xe lửa / xe điện - người lớn', 'TRAIN',
-     'Một vòng tham quan, khách từ 1,3 m.', 30000, 130, NULL, 1, 1, 30, 10),
-    ('TRAIN_CHILD', 'Xe lửa / xe điện - trẻ em', 'TRAIN',
-     'Một vòng tham quan, khách từ 0,8 m đến dưới 1,3 m.', 20000, 80, 130, 1, 1, 30, 11),
-    ('TRAIN_INFANT', 'Xe lửa / xe điện - dưới 0,8 m', 'TRAIN',
-     'Miễn phí khi đi cùng gia đình.', 0, NULL, 80, 1, 1, 30, 12),
-    ('TOUR_PRIVATE', 'Tour xe điện riêng', 'TOUR',
-     'Tour xe điện riêng cho nhóm, tối thiểu 6 vé mỗi tour.', 150000, NULL, NULL, 6, 1, 30, 20),
-    ('TOUR_VIP',    'Tour xe điện VIP', 'TOUR',
-     'Cho thú ăn tại các điểm dừng (hươu cao cổ, gấu mèo, linh dương, voi, dê cừu, hươu nai), có quà lưu niệm. Tối thiểu 6 vé.',
-     200000, NULL, NULL, 6, 1, 30, 21),
-    ('PASS_BOOK_ADULT', 'Vé tập 10 vé - từ 1,3 m', 'PASS',
-     '1 tập = 10 vé vào cổng, giảm 10%, dùng chung được.', 540000, 130, NULL, 1, 10, 30, 30),
-    ('PASS_BOOK_CHILD', 'Vé tập 10 vé - 1 m đến dưới 1,3 m', 'PASS',
-     '1 tập = 10 vé vào cổng, giảm 10%, dùng chung được.', 360000, 100, 130, 1, 10, 30, 31),
-    ('PASS_MONTHLY', 'Vé tháng', 'PASS',
-     'Vào cổng mỗi ngày trong 30 ngày kể từ ngày đăng ký. Thẻ cá nhân có ảnh 3x4, không chuyển nhượng.',
-     500000, NULL, NULL, 1, 30, 30, 32),
-    ('GUIDE_VI',    'Thuyết minh viên - tiếng Việt', 'SERVICE',
-     '1h30, tối đa 50 khách mỗi thuyết minh viên.', 300000, NULL, NULL, 1, 1, 30, 40),
-    ('GUIDE_EN',    'Thuyết minh viên - tiếng Anh', 'SERVICE',
-     '1h30, tối đa 50 khách mỗi thuyết minh viên.', 500000, NULL, NULL, 1, 1, 30, 41);
-
--- ---------------------------------------------------------------------
--- Group policies (groups of 10+ visitors)
--- ---------------------------------------------------------------------
-INSERT INTO group_policies
-    (group_category, name, description, min_group_size, visitor_discount_percent, beneficiary_discount_percent,
-     staff_discount_percent, train_discount_percent, free_adult_per_students, requires_verification, deposit_percent)
-VALUES
-    ('PRESCHOOL', 'Đoàn học sinh mầm non',
-     'Giảm 40% vé cổng cho học sinh; cứ 10 học sinh miễn vé 1 người lớn; giảm 10% xe lửa / xe điện.',
-     10, 40, 0, 0, 10, 10, FALSE, 30),
-    ('SOCIAL_WELFARE', 'Đoàn bảo trợ xã hội',
-     'Mái ấm, lớp học tình thương, trường khuyết tật... Miễn phí vé cổng cho đối tượng khuyết tật / hoàn cảnh đặc biệt; giảm 50% cho người phục vụ; giảm 20% xe lửa / xe điện. Cần giấy xác nhận hoặc danh sách của cơ quan có thẩm quyền.',
-     10, 0, 100, 50, 20, NULL, TRUE, 30),
-    ('REVOLUTIONARY_MERIT', 'Người có công với cách mạng',
-     'Miễn phí vé cổng. Cần giấy tờ hợp lệ do cơ quan có thẩm quyền cấp.',
-     10, 0, 100, 0, 0, NULL, TRUE, 30),
-    ('STANDARD', 'Đoàn khác',
-     'Tiểu học, THCS, THPT, đại học, cơ quan... Giảm 10% vé cổng cả đoàn; giảm 10% xe lửa / xe điện.',
-     10, 10, 0, 10, 10, NULL, FALSE, 30);
-
--- ---------------------------------------------------------------------
--- Experience combos (prices are assumptions - the source lists none)
--- ---------------------------------------------------------------------
-INSERT INTO combos (code, name, description, price, duration_minutes, min_participants, max_participants, min_age) VALUES
-    ('COMBO_01', 'Khám phá những điều kỳ thú',
-     'Một vòng xe lửa / xe điện, đi bộ cùng thuyết minh viên, tương tác với thú, trò chơi.', 180000, 150, 10, 50, 4),
-    ('COMBO_02', 'Tour xe điện VIP',
-     'Lấy thức ăn, cho thú ăn tại các điểm dừng, thuyết minh, quà lưu niệm.', 250000, 90, 6, 20, 3),
-    ('COMBO_03', 'Thiên nhiên diệu kỳ',
-     'Tìm hiểu cây cổ thụ quý, kỹ thuật chăm sóc cây, trang trí chậu cây hoặc nuôi sâu, 2 trò chơi.', 160000, 150, 10, 50, 6),
-    ('COMBO_04', 'Nhà khoa học tí hon',
-     'Xe lửa, cho hươu cao cổ ăn, nhập vai nhà khảo cổ, tham quan bảo tàng, nhận diện mẫu hóa thạch, 1 trò chơi.', 220000, 180, 10, 40, 6),
-    ('COMBO_05', 'Cùng chăm sóc các bạn nhỏ đáng yêu',
-     'Chuẩn bị thức ăn cho công và hồng hạc, chăm sóc da rùa, tham quan bệnh viện thú y.', 200000, 150, 10, 30, 6),
-    ('COMBO_06', 'Đánh thức giác quan',
-     'Trải nghiệm thị giác, xúc giác, vị giác, khứu giác, thính giác và đu quay lồng đèn.', 170000, 120, 10, 40, 4),
-    ('COMBO_07', 'Giải mã Thảo Cầm Viên',
-     'Hoạt động nhóm, sổ tay kiến thức, quà tặng.', 190000, 180, 10, 60, 8),
-    ('COMBO_08', 'Vườn thú của bé',
-     'Đi cùng thuyết minh viên, cho thú ăn, xe lửa, chơi trò chơi không giới hạn trong 30 phút.', 150000, 120, 10, 40, 3),
-    ('COMBO_09', 'Khu rừng giữa lòng thành phố',
-     'Trà, bánh và không gian yên tĩnh giữa cây xanh.', 120000, 90, 2, 30, NULL),
-    ('COMBO_10', 'Khi màn đêm buông xuống',
-     'Tour đêm quan sát các loài thú hoạt động về đêm.', 300000, 120, 6, 30, 8),
-    ('COMBO_11', 'Tham quan bằng xe điện',
-     'Tham quan toàn bộ Thảo Cầm Viên bằng xe điện suốt thời gian tham quan.', 150000, 90, 1, 20, NULL);

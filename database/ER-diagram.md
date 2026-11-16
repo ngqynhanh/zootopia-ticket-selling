@@ -8,17 +8,11 @@ Audit columns (`created_at`, `updated_at`, `created_by`, `updated_by`) and soft-
 ```mermaid
 erDiagram
     users ||--o{ orders : places
-    users ||--o{ user_tokens : has
     users ||--o{ verifications : uploads
-    users ||--o{ notifications : receives
-    users ||--o{ check_ins : "scans (staff)"
     users ||--o{ payments : "receives cash (staff)"
-    users ||--o{ audit_logs : performs
     users ||--o{ user_promotions : redeems
     promotions ||--o{ user_promotions : "redeemed in"
     promotions |o--o{ orders : "applied to"
-    users ||--o{ user_saved_activities : plans
-    activities ||--o{ user_saved_activities : "saved in"
 
     orders ||--|{ order_items : contains
     ticket_types |o--o{ order_items : "sold as"
@@ -29,11 +23,9 @@ erDiagram
     orders |o--o{ verifications : "proved by"
     orders ||--o{ payments : "paid by"
     orders ||--o{ tickets : issues
-    tickets ||--o{ check_ins : "used at"
 
     combos ||--o{ combo_zones : visits
     zones ||--o{ combo_zones : "visited by"
-    zones ||--o{ animals : houses
     zones ||--o{ activities : hosts
 
     users {
@@ -46,14 +38,6 @@ erDiagram
         varchar role "CUSTOMER|STAFF|MANAGER|ADMIN"
         boolean email_verified
         timestamptz last_login_at
-    }
-    user_tokens {
-        bigint id PK
-        bigint user_id FK
-        varchar token_hash UK
-        varchar purpose
-        timestamptz expires_at
-        timestamptz used_at
     }
     ticket_types {
         bigint id PK
@@ -86,13 +70,6 @@ erDiagram
         numeric map_x
         numeric map_y
     }
-    animals {
-        bigint id PK
-        bigint zone_id FK
-        varchar common_name
-        varchar scientific_name
-        varchar conservation_status
-    }
     activities {
         bigint id PK
         bigint zone_id FK
@@ -102,13 +79,6 @@ erDiagram
         time end_time
         smallint_array days_of_week
         smallint_array weeks_of_month
-    }
-    faqs {
-        bigint id PK
-        varchar category
-        varchar question
-        text answer
-        tsvector search_vector
     }
     promotions {
         bigint id PK
@@ -202,14 +172,6 @@ erDiagram
         varchar status
         timestamptz expires_at
     }
-    check_ins {
-        bigint id PK
-        bigint ticket_id FK
-        bigint staff_id FK
-        smallint people_count "1..4"
-        char gate "A|B|C|D"
-        timestamptz scanned_at
-    }
     combo_zones {
         bigint combo_id PK,FK
         bigint zone_id PK,FK
@@ -220,32 +182,5 @@ erDiagram
         bigint promotion_id PK,FK
         bigint order_id FK
         timestamptz used_at
-    }
-    user_saved_activities {
-        bigint user_id PK,FK
-        bigint activity_id PK,FK
-        date plan_date PK
-    }
-    notifications {
-        bigint id PK
-        bigint user_id FK
-        varchar type
-        varchar title
-        boolean is_read
-    }
-    audit_logs {
-        bigint id PK
-        bigint actor_id FK
-        varchar action
-        varchar entity_type
-        bigint entity_id
-        jsonb old_value
-        jsonb new_value
-    }
-    system_settings {
-        varchar setting_key PK
-        varchar setting_value
-        varchar value_type
-        boolean is_public
     }
 ```
