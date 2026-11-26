@@ -167,7 +167,12 @@ public class GlobalExceptionHandler {
         if (code.status().is5xxServerError()) {
             log.error("{} {} failed: {}", request.getMethod(), path, ex.getMessage(), ex);
         } else {
-            log.warn("{} {} -> {} {}: {}", request.getMethod(), path, code.status().value(), code, ex.getMessage());
+            // For validation errors log only the field names: exception messages contain the rejected
+            // values, which may be passwords or personal data.
+            String detail = errors.isEmpty()
+                    ? ex.getMessage()
+                    : "invalid fields " + errors.stream().map(ApiError.FieldErrorDetail::field).toList();
+            log.warn("{} {} -> {} {}: {}", request.getMethod(), path, code.status().value(), code, detail);
         }
         return ResponseEntity.status(code.status()).body(errorFactory.create(code, message, errors, request, ex));
     }

@@ -31,6 +31,9 @@ public class ApiErrorFactory {
                 errors == null || errors.isEmpty() ? null : errors,
                 request.getRequestURI(),
                 MDC.get(RequestIdFilter.MDC_REQUEST_ID),
-                includeDebugDetail && ex != null ? ex.getClass().getSimpleName() + ": " + ex.getMessage() : null);
+                // Field errors already explain the problem; the exception text would echo rejected values.
+                includeDebugDetail && ex != null && (errors == null || errors.isEmpty())
+                        ? ex.getClass().getSimpleName() + ": " + ex.getMessage()
+                        : null);
     }
 }

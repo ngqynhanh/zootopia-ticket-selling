@@ -64,6 +64,11 @@
             <version>${jjwt.version}</version>
             <scope>runtime</scope>
         </dependency>
+        <!-- Verification and password-reset emails (SMTP) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-mail</artifactId>
+        </dependency>
         <!-- Health checks for deployment platforms (Render/Railway) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
