@@ -21,7 +21,7 @@ Web Application Development course.
 ├── backend/      Spring Boot REST API (see backend/README.md)
 ├── frontend/     React app (to be added)
 ├── database/     schema.sql, ER diagram, seed data
-├── docs/         API, deployment, contributing guides (to be added)
+├── docs/         API.md, backend roadmap (deployment and contributing guides to come)
 ├── docker-compose.yml
 └── .env.example
 ```
@@ -40,17 +40,20 @@ Running without Docker is described in [backend/README.md](backend/README.md).
 
 | Member | Role |
 |---|---|
-| A | Backend & database |
-| B | Frontend & UI |
+| Nguyễn Quỳnh Anh | Backend & database |
+| Nguyễn Ngọc Phương Như | Frontend & UI |
 
 ## Status
 
-Week 1 (09/11 – 15/11), backend part, is done:
+- **Week 1:**
+  - ERD, plus a SQL schema of 13 core tables and 2 junction tables;
+  - Spring Boot skeleton;
+  - Docker.
+- **Week 2:**
+  - JWT authentication with email verification, refresh-token rotation and a login rate limit;
+  - role-based access;
+  - profile and admin user management;
+  - audit log;
+  - ticket type and combo CRUD with search, filters and paging.
 
-- ERD;
-- SQL schema: 13 core tables + 2 junction tables, with constraints, FKs and indexes;
-- Spring Boot project skeleton;
-- Docker setup.
-
-Next is week 2: authentication (JWT), RBAC, and CRUD for users, ticket types and combos.
-See [docs/backend-roadmap.md](docs/backend-roadmap.md).
+API reference: [docs/API.md](docs/API.md). Next steps: [docs/backend-roadmap.md](docs/backend-roadmap.md).

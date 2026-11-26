@@ -4,6 +4,7 @@ import com.zoopass.config.AppProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.mail.javamail.JavaMailSender;
@@ -18,9 +19,11 @@ public class EmailConfig {
     private static final Logger log = LoggerFactory.getLogger(EmailConfig.class);
 
     @Bean
-    public EmailService emailService(ObjectProvider<JavaMailSender> mailSender, AppProperties properties) {
+    public EmailService emailService(ObjectProvider<JavaMailSender> mailSender, AppProperties properties,
+                                     @Value("${spring.mail.host:}") String host) {
         JavaMailSender sender = mailSender.getIfAvailable();
-        if (sender == null) {
+        // docker-compose passes an empty SPRING_MAIL_HOST when SMTP is not configured.
+        if (sender == null || host.isBlank()) {
             log.warn("No SMTP server configured (SPRING_MAIL_HOST): emails are written to the log only");
             return new LoggingEmailService();
         }

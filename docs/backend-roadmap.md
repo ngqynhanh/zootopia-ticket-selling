@@ -1,8 +1,9 @@
 # Backend roadmap
 
-Members swap BE/FE every week, so this file says what the backend already has and what comes next.
-Commit `e06fc07` ("first commit") holds a ready draft of several later-week pieces. Restore a file
-from it instead of rewriting it, then **read it, adapt it and test it** before committing:
+From week 2 on, one member (Nguyễn Quỳnh Anh) owns the backend for the rest of the project, so there are no
+more weekly BE/FE swaps. This file says what the backend has and what comes next. Commit `e06fc07`
+("first commit") still holds drafts of later SQL blocks. Restore one with the command below, then
+**read, adapt and test it** before committing:
 
 ```bash
 git checkout e06fc07 -- <path>
@@ -12,42 +13,56 @@ git checkout e06fc07 -- <path>
 
 - [x] ERD: `database/ER-diagram.md`
 - [x] SQL schema with constraints, FKs and indexes: `V1__init_schema.sql` (13 core tables + 2 junction tables)
-- [x] Spring Boot project:
-  - config and profiles, CORS, Swagger;
-  - `BaseEntity` with audit columns, `SoftDeletableEntity`;
-  - `GlobalExceptionHandler` with the shared `ApiError` format;
-  - request-id logging with file rotation;
-  - Dockerfile, docker-compose.
+- [x] Spring Boot skeleton:
+  - config, Swagger;
+  - audit base entities;
+  - `GlobalExceptionHandler`;
+  - request-id logging;
+  - Docker.
 
-## Week 2 – Users & core CRUD
+## Week 2 – done (branch `feature/week2-auth-crud`)
 
-| Task | Draft in `e06fc07` |
-|---|---|
-| `User` entity, `Role` enum, `UserRepository` | `backend/src/main/java/com/zoopass/user/` |
-| `user_tokens` table (email verification, password reset, refresh token) as `V2__...sql` | `user_tokens` block in `V1__init_schema.sql` |
-| Spring Security, BCrypt, JWT login/refresh, rate limit, RBAC | – |
-| Fill `JpaAuditingConfig` auditor from the SecurityContext | – |
-| `TicketType`, `Combo` entities + public read API | `backend/src/main/java/com/zoopass/catalog/` |
-| Paginated response "Showing 21–40 of 156" | `backend/src/main/java/com/zoopass/common/dto/PageResponse.java` |
-| Reference data: ticket prices, group policies, combos | `V2__reference_data.sql` (renumber it) |
-| `system_settings` table + service/API | `system_settings` block + `backend/src/main/java/com/zoopass/setting/` |
-| `audit_logs` table | `audit_logs` block |
-| Tests | `backend/src/test/java/com/zoopass/{catalog,user,common/dto}/` |
+- [x] `V2`: `user_tokens`, `audit_logs`, `system_settings`.
+- [x] `V3`: reference data (ticket prices, group policies, combos, settings).
+- [x] Spring Security:
+  - stateless JWT (15 min) and BCrypt;
+  - `@PreAuthorize` role checks;
+  - CORS and security headers;
+  - 401/403 errors in the `ApiError` format.
+- [x] Auth flows:
+  - register, then verify by email;
+  - login with a rate limit (5 failures / 15 min → 429);
+  - refresh-token rotation in an HttpOnly cookie, with reuse detection;
+  - logout;
+  - forgot / reset password.
+- [x] Profile (`/users/me`) and admin user management: search/filter/sort/paging, create, role change, deactivate.
+- [x] Audit log: service plus admin API.
+- [x] Ticket type and combo CRUD:
+  - public search with at least 5 filters;
+  - manager create, update, soft delete and restore.
+- [x] Dev profile seeds `admin@ / manager@ / staff@ / customer@zoopass.test`.
+- [x] 56 automated tests (embedded PostgreSQL).
 
-## Week 3 – Business logic
+## Week 3 – Business logic (next)
 
-- Pricing service (individual + group policies), order state machine.
-- Upload of proof documents, Staff review.
-- QR e-ticket generation.
+- Orders:
+  - individual ticket order with server-side pricing;
+  - date rules: up to 30 days ahead, same-day sales until 17:30;
+  - infant tickets need an adult ticket;
+  - tours need at least 6 tickets.
+- Group booking:
+  - pricing strategy per group category;
+  - guides = ceil(visitors / 50);
+  - 30% deposit.
+- Order state machine (valid transitions only, history in the audit log).
+- Proof-document upload (type/size/magic-byte checks) and the Staff review queue.
+- QR e-ticket generation (one QR per transaction, 4 people per scan, valid 30 days).
 
 ## Week 4 – Search & advanced features
 
-- `check_ins` table (QR scan, 1–4 people per scan).
-- `faqs` (full-text search), `animals`, `notifications`, `user_saved_activities` tables.
-- VNPay, email, scheduled jobs, reports.
-
-The SQL for these tables is in the matching blocks of `V1__init_schema.sql` at `e06fc07`. Add them as new
-migrations; never edit a migration a teammate has already run.
+- `check_ins` table and the gate check-in API.
+- `faqs` (full-text search), `animals`, `notifications`, `user_saved_activities`: SQL blocks in `e06fc07`. Add them as new migrations.
+- VNPay sandbox, HTML email templates, scheduled jobs, revenue reports.
 
 ## Week 5 – Deploy
 
