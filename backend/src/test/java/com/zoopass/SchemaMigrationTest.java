@@ -63,6 +63,30 @@ class SchemaMigrationTest {
     }
 
     @Test
+    void referenceDataIsLoaded() {
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM ticket_types", Integer.class)).isGreaterThanOrEqualTo(13);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM group_policies", Integer.class)).isEqualTo(4);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM combos", Integer.class)).isGreaterThanOrEqualTo(11);
+        assertThat(jdbc.queryForObject(
+                "SELECT setting_value FROM system_settings WHERE setting_key = 'group.min_size'", String.class))
+                .isEqualTo("10");
+    }
+
+    @Test
+    void tokensAreStoredOnlyAsUniqueHashes() {
+        long userId = insertUser("token-owner@example.com");
+        jdbc.update("""
+                INSERT INTO user_tokens (user_id, token_hash, purpose, expires_at)
+                VALUES (?, 'abc', 'REFRESH', now() + interval '1 day')
+                """, userId);
+        assertThatThrownBy(() -> jdbc.update("""
+                INSERT INTO user_tokens (user_id, token_hash, purpose, expires_at)
+                VALUES (?, 'abc', 'REFRESH', now() + interval '1 day')
+                """, userId))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
     void orderItemMustReferenceExactlyOneProduct() {
         long orderId = insertOrder();
         assertThatThrownBy(() -> jdbc.update("""
@@ -123,7 +147,7 @@ class SchemaMigrationTest {
     @Test
     void deletingAnOrderCascadesToItsItems() {
         long orderId = insertOrder();
-        long ticketTypeId = insertTicketType("GATE_ADULT", 60000);
+        long ticketTypeId = insertTicketType("TEST_ADULT", 60000);
         jdbc.update("""
                 INSERT INTO order_items (order_id, ticket_type_id, quantity, unit_price, line_total)
                 VALUES (?, ?, 2, 60000, 120000)
@@ -138,7 +162,7 @@ class SchemaMigrationTest {
     @Test
     void ticketTypeInUseCannotBeHardDeleted() {
         long orderId = insertOrder();
-        long ticketTypeId = insertTicketType("GATE_CHILD", 40000);
+        long ticketTypeId = insertTicketType("TEST_CHILD", 40000);
         jdbc.update("""
                 INSERT INTO order_items (order_id, ticket_type_id, quantity, unit_price, line_total)
                 VALUES (?, ?, 1, 40000, 40000)
@@ -150,7 +174,7 @@ class SchemaMigrationTest {
 
     @Test
     void updatedAtTriggerRefreshesTimestamp() {
-        long ticketTypeId = insertTicketType("GATE_ADULT", 60000);
+        long ticketTypeId = insertTicketType("TEST_ADULT", 60000);
         jdbc.update("UPDATE ticket_types SET updated_at = now() - interval '1 day' WHERE id = ?", ticketTypeId);
         jdbc.update("UPDATE ticket_types SET price = 65000 WHERE id = ?", ticketTypeId);
         Boolean refreshed = jdbc.queryForObject(
@@ -172,10 +196,8 @@ class SchemaMigrationTest {
     }
 
     private long insertGroupPolicy() {
-        return jdbc.queryForObject("""
-                INSERT INTO group_policies (group_category, name, visitor_discount_percent)
-                VALUES ('STANDARD', 'Đoàn khác', 10) RETURNING id
-                """, Long.class);
+        // Reference data (V3) already contains one policy per category.
+        return jdbc.queryForObject("SELECT id FROM group_policies WHERE group_category = 'STANDARD'", Long.class);
     }
 
     private long insertOrder() {

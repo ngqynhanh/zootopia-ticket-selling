@@ -1,18 +1,16 @@
 package com.zoopass.common.exception;
 
-import com.zoopass.common.web.RequestIdFilter;
-import com.zoopass.config.AppProperties;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
-import java.time.Instant;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.slf4j.MDC;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.core.AuthenticationException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -36,16 +34,30 @@ public class GlobalExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
-    private final boolean includeDebugDetail;
+    private final ApiErrorFactory errorFactory;
 
-    public GlobalExceptionHandler(AppProperties properties) {
-        this.includeDebugDetail = properties.errors() != null && properties.errors().includeDebugDetail();
+    public GlobalExceptionHandler(ApiErrorFactory errorFactory) {
+        this.errorFactory = errorFactory;
     }
 
     /** Errors thrown on purpose by our services (not found, business rule, conflict...). */
     @ExceptionHandler(ApiException.class)
     public ResponseEntity<ApiError> handleApiException(ApiException ex, HttpServletRequest request) {
-        return build(ex.getErrorCode(), ex.getMessage(), List.of(), request, ex);
+        List<ApiError.FieldErrorDetail> errors = ex instanceof FieldValidationException fieldError
+                ? fieldError.getErrors()
+                : List.of();
+        return build(ex.getErrorCode(), ex.getMessage(), errors, request, ex);
+    }
+
+    /** {@code @PreAuthorize} denied a logged-in user (wrong role). */
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<ApiError> handleAccessDenied(AccessDeniedException ex, HttpServletRequest request) {
+        return build(ErrorCode.FORBIDDEN, "Bạn không có quyền thực hiện thao tác này", List.of(), request, ex);
+    }
+
+    @ExceptionHandler(AuthenticationException.class)
+    public ResponseEntity<ApiError> handleAuthentication(AuthenticationException ex, HttpServletRequest request) {
+        return build(ErrorCode.UNAUTHORIZED, "Vui lòng đăng nhập", List.of(), request, ex);
     }
 
     /** {@code @Valid @RequestBody} failed. */
@@ -155,17 +167,13 @@ public class GlobalExceptionHandler {
         if (code.status().is5xxServerError()) {
             log.error("{} {} failed: {}", request.getMethod(), path, ex.getMessage(), ex);
         } else {
-            log.warn("{} {} -> {} {}: {}", request.getMethod(), path, code.status().value(), code, ex.getMessage());
+            // For validation errors log only the field names: exception messages contain the rejected
+            // values, which may be passwords or personal data.
+            String detail = errors.isEmpty()
+                    ? ex.getMessage()
+                    : "invalid fields " + errors.stream().map(ApiError.FieldErrorDetail::field).toList();
+            log.warn("{} {} -> {} {}: {}", request.getMethod(), path, code.status().value(), code, detail);
         }
-        ApiError body = new ApiError(
-                Instant.now(),
-                code.status().value(),
-                code.name(),
-                message,
-                errors.isEmpty() ? null : errors,
-                path,
-                MDC.get(RequestIdFilter.MDC_REQUEST_ID),
-                includeDebugDetail ? ex.getClass().getSimpleName() + ": " + ex.getMessage() : null);
-        return ResponseEntity.status(code.status()).body(body);
+        return ResponseEntity.status(code.status()).body(errorFactory.create(code, message, errors, request, ex));
     }
 }

@@ -1,6 +1,13 @@
+server:
+  # Render/Railway terminate HTTPS at a proxy; trust its X-Forwarded-* headers
+  # so the real client IP is used for login rate limiting and audit logs.
+  forward-headers-strategy: framework
+
 app:
   errors:
     include-debug-detail: false
+  security:
+    refresh-cookie-secure: ${REFRESH_COOKIE_SECURE:true}
 
 springdoc:
   swagger-ui:

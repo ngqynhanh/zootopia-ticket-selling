@@ -5,6 +5,9 @@ spring:
 app:
   errors:
     include-debug-detail: true
+  security:
+    # Development only - production must set JWT_SECRET.
+    jwt-secret: ${JWT_SECRET:dev-only-secret-change-me-0123456789abcdef}
 
 management:
   endpoint:
