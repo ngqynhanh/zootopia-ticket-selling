@@ -1,6 +1,10 @@
 app:
   errors:
     include-debug-detail: false
+  security:
+    jwt-secret: test-secret-0123456789abcdef0123456789abcdef
+    # Cheaper hashing keeps the test suite fast (production uses 10).
+    bcrypt-strength: 4
 
 logging:
   file:

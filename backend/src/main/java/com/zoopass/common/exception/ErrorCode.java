@@ -9,8 +9,11 @@ import org.springframework.http.HttpStatus;
 public enum ErrorCode {
     VALIDATION_FAILED(HttpStatus.BAD_REQUEST),
     MALFORMED_REQUEST(HttpStatus.BAD_REQUEST),
+    INVALID_TOKEN(HttpStatus.BAD_REQUEST),
     UNAUTHORIZED(HttpStatus.UNAUTHORIZED),
     FORBIDDEN(HttpStatus.FORBIDDEN),
+    EMAIL_NOT_VERIFIED(HttpStatus.FORBIDDEN),
+    ACCOUNT_DISABLED(HttpStatus.FORBIDDEN),
     RESOURCE_NOT_FOUND(HttpStatus.NOT_FOUND),
     METHOD_NOT_ALLOWED(HttpStatus.METHOD_NOT_ALLOWED),
     CONFLICT(HttpStatus.CONFLICT),
